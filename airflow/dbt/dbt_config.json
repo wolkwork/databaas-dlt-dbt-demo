@@ -1,0 +1,6 @@
+{
+  "catalog": "iceberg",
+  "namespaces": {
+    "TRINO_NAMESPACE": "marine_transformed"
+  }
+}

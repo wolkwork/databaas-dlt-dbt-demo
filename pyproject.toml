@@ -1,0 +1,35 @@
+# Dev-only tooling (pytest and friends). Deliberately separate from
+# airflow/pyproject.toml, which packages what actually ships in the deployed
+# DAG bundle (the airflow/ tree) -- this file lives outside that tree, so
+# nothing here is ever deployed.
+[project]
+name = "databaas-dlt-dbt-example-dev"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    # dlt, pyiceberg and databaas-utils pinned to the Airflow runtime image,
+    # so a test failure here reflects the same behaviour production runs.
+    # [airflow] as in the image: obstore-databaas comes only through an extra.
+    "databaas-utils[airflow]==0.4.0",
+    "pylakekeeper==0.3.0",
+    "dlt==1.30.0",
+    # Pinned to what knmi_pipeline_dag.py's venv installs.
+    "netCDF4==1.7.2",
+    "numpy>=2.0",
+    # Already in the deployed Airflow image; each *_pipeline.lakehouse needs it.
+    "pyarrow",
+    # The image's version; sql-sqlite gives tests a local catalog.
+    "pyiceberg[sql-sqlite]==0.11.1",
+    "pytest>=8.0",
+    "responses>=0.25",
+]
+
+[tool.pytest.ini_options]
+# Test files live at the repo root, outside airflow/, so they never end up
+# in the deployed bundle -- add airflow/ to sys.path so
+# tests can import marine_pipeline directly, same as the DAG does at runtime.
+pythonpath = ["airflow"]
+testpaths = ["tests"]

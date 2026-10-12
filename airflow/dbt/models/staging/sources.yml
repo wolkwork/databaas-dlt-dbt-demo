@@ -1,0 +1,42 @@
+version: 2
+
+sources:
+  - name: marine_forecast
+    database: "{{ env_var('TRINO_CATALOG', 'iceberg') }}"
+    # `marine_forecast` in production, `marine_forecast_dev_<slug>` on a
+    # branch deploy -- must match databaas_utils.airflow.scoped()'s output for
+    # this deployment exactly, so set MARINE_SCHEMA by hand for local runs.
+    schema: "{{ env_var('MARINE_SCHEMA', 'marine_forecast') }}"
+    tables:
+      # Name owned by marine_pipeline.lakehouse.TABLE (written by
+      # ingest_marine_forecast) -- raw, appended (not overwritten): one row
+      # per call, one location, no loop. `hourly` is the raw API field as a
+      # nested struct column (not JSON text) -- unnest it in a staging model
+      # (Trino dot notation / UNNEST), not here.
+      - name: "{{ env_var('MARINE_TABLE', 'marine_table') }}"
+
+  - name: wind_forecast
+    database: "{{ env_var('TRINO_CATALOG', 'iceberg') }}"
+    # `wind_forecast` in production, `wind_forecast_dev_<slug>` on a
+    # branch deploy -- must match databaas_utils.airflow.scoped()'s output for
+    # this deployment exactly, so set WIND_SCHEMA by hand for local runs.
+    schema: "{{ env_var('WIND_SCHEMA', 'wind_forecast') }}"
+    tables:
+      # Name owned by wind_pipeline.lakehouse.TABLE (written by
+      # ingest_wind_forecast) -- raw, appended (not overwritten): one row
+      # per call, one location, no loop. `hourly` is the raw API field as a
+      # nested struct column (not JSON text) -- unnest it in a staging model
+      # (Trino dot notation / UNNEST), not here.
+      - name: "{{ env_var('WIND_TABLE', 'wind_table') }}"
+
+  - name: knmi_observation
+    database: "{{ env_var('TRINO_CATALOG', 'iceberg') }}"
+    # `knmi_observation` in production, `knmi_observation_dev_<slug>` on a
+    # branch deploy -- must match databaas_utils.airflow.scoped()'s output for
+    # this deployment exactly, so set KNMI_SCHEMA by hand for local runs.
+    schema: "{{ env_var('KNMI_SCHEMA', 'knmi_observation') }}"
+    tables:
+      # Name owned by knmi_pipeline.lakehouse.TABLE (written by
+      # ingest_knmi_observations) -- raw, appended (not overwritten): one row
+      # per (file, hour) for our one station, no loop over stations.
+      - name: "{{ env_var('KNMI_TABLE', 'knmi_table') }}"

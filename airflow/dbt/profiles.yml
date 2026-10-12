@@ -1,0 +1,26 @@
+marine_transform:
+  target: trino
+  outputs:
+    trino:
+      type: trino
+      # Trino accepts only a Zitadel JWT, over its HTTPS gateway hostname --
+      # plain HTTP to the in-cluster Service is rejected. Each Airflow dbt_run
+      # task sets TRINO_JWT from the lakehouse connection's service account
+      # (databaas_utils.airflow.get_settings), whose token `sub` is the Trino
+      # principal; a local run sets it by hand (`databaas token`).
+      method: jwt
+      jwt_token: "{{ env_var('TRINO_JWT') }}"
+      host: "{{ env_var('TRINO_HOST', 'trino.example.databaas.app') }}"
+      # NOT TRINO_PORT -- Kubernetes auto-injects that exact name for a
+      # Service called `trino`, which silently wins over this default and
+      # breaks `| as_number` on the resulting `tcp://...` string.
+      port: "{{ env_var('DBT_TRINO_PORT', '443') | as_number }}"
+      http_scheme: https
+      cert: true
+      catalog: "{{ env_var('TRINO_CATALOG', 'iceberg') }}"
+      # Output namespace for this project's own models (marts/staging),
+      # scoped per deployment -- the Airflow dbt_run task derives this from
+      # dbt_config.json + databaas_utils.airflow.scoped(); this fallback only
+      # matters for a local run, where TRINO_NAMESPACE must be set by hand.
+      schema: "{{ env_var('TRINO_NAMESPACE', 'marine_transformed') }}"
+      threads: 4

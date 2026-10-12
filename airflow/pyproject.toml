@@ -1,0 +1,12 @@
+[project]
+name = "marine-pipeline-bundle"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools]
+packages = ["marine_pipeline", "wind_pipeline", "knmi_pipeline", "dbt_cosmos"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

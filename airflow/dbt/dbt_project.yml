@@ -1,0 +1,20 @@
+name: 'marine_transform'
+version: '1.0.0'
+config-version: 2
+
+profile: 'marine_transform'
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  marine_transform:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

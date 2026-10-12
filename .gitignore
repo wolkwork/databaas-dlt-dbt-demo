@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+/tmp/venvs/
+
+# dbt
+target/
+dbt_packages/
+logs/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Env files
+.env
+.env.*

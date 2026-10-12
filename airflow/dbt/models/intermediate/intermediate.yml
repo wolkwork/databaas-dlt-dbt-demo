@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: int_marine__current_hourly
+    description: >
+      Current forecast for the marine Source: one row per
+      (location, hour), the latest-polled wave-height reading for that hour.
+    tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [location, forecast_time]
+
+  - name: int_wind__current_hourly
+    description: >
+      Current forecast for the wind Source: one row per
+      (location, hour), the latest-polled wind reading for that hour.
+    tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [location, forecast_time]
+
+  - name: int_knmi__current_hourly
+    description: >
+      Current observation for the KNMI Source: one row per
+      (location, hour), the latest-fetched observed wind reading for that
+      hour.
+    tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [location, observed_time]
