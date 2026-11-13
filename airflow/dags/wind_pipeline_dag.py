@@ -1,4 +1,4 @@
-"""Wind forecast ingestion (dlt) -> hourly staging (dbt).
+"""Wind forecast ingestion (dlt) -> hourly staging (dbt via Cosmos).
 
 Ingests the hourly wind speed/direction forecast for a single location via
 dlt's REST API source and appends it, raw, into an Iceberg table
@@ -8,35 +8,33 @@ unnests the raw hourly payload into one row per hour
 
 Same Source structure as the marine Source, on its own 30-minute schedule so
 the reference template demonstrates two Sources refreshing at genuinely
-different cadences. dlt, dbt-core/dbt-trino and databaas-utils all ship in
-the Airflow runtime image the task pods run, so both tasks are plain `@task`s;
-only DAG-parse-time code is limited to the application image.
+different cadences.
 
-dbt execution is a `dbtRunner()` call, not a Cosmos TaskGroup, mirroring the
-marine Source's own `dbt_run` task exactly.
+The dbt step is a Cosmos TaskGroup in watcher mode (`dbt_cosmos`), the same
+as the marine Source: one producer task runs a single `dbt build` of
+`stg_wind__hourly`, and each model and test in that selection shows up as its
+own task reporting its own result.
 
 On success, emits an Asset so the shared Marts DAG (`marts_pipeline_dag.py`)
-can trigger off either Source's completion instead of polling on a fixed
+can trigger off any Source's completion instead of polling on a fixed
 schedule alone.
 
 Task layout:
-    ingest_wind_forecast ──> dbt_run (emits an Asset)
-
-`dbt/` lives at `airflow/dbt/` -- inside the deployed bundle (the whole
-`airflow/` tree is deployed), so the dbt task resolves it relative to this
-file.
+    ingest_wind_forecast ──> dbt (Cosmos TaskGroup) ──> transformed (emits an Asset)
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from airflow.sdk import Asset, dag, task
-from databaas_target import target
+from databaas_utils.airflow.target import target
+from dbt_cosmos import dbt_task_group
 
-# Ships inside the bundle at airflow/dbt/ -- see the module docstring.
-DBT_PROJECT_DIR = Path(__file__).resolve().parents[1] / "dbt"
+# Source schema/table names are owned by the pipeline code that actually
+# writes them; namespace() already applies scoped() internally.
+from wind_pipeline.lakehouse import TABLE as WIND_TABLE
+from wind_pipeline.lakehouse import namespace as wind_namespace
 
 # Scoped like `target.dag_id()` so a dev deployment's runs emit a distinct
 # Asset from production's -- otherwise a dev branch's successful run would
@@ -86,61 +84,19 @@ def wind_pipeline():
 
     # ---- hourly staging ----
 
-    @task(
-        task_id="dbt_run",
-        retries=2,
-        retry_delay=timedelta(minutes=2),
-        outlets=[WIND_FORECAST_ASSET],
+    transform = dbt_task_group(
+        group_id="dbt",
+        # stg_wind__hourly selects only from a source(), so it has no
+        # upstream model for a `+` to add.
+        select=["stg_wind__hourly"],
+        source_env={"WIND_SCHEMA": wind_namespace(), "WIND_TABLE": WIND_TABLE},
     )
-    def dbt_run(dbt_project_dir: str) -> None:
-        import json
-        import os
-        from pathlib import Path
 
-        from databaas_utils.airflow import get_settings, scoped
+    @task(outlets=[WIND_FORECAST_ASSET])
+    def transformed() -> None:
+        """Marks the whole dbt group done, for the Marts DAG's trigger."""
 
-        # Source schema/table names are owned by the pipeline code that
-        # actually writes them -- import directly instead of copying the
-        # strings into dbt_config.json/sources.yml by hand, where they could
-        # drift. namespace() already applies scoped() internally.
-        from wind_pipeline.lakehouse import TABLE as WIND_TABLE
-        from wind_pipeline.lakehouse import namespace as wind_namespace
-
-        os.environ["WIND_SCHEMA"] = wind_namespace()
-        os.environ["WIND_TABLE"] = WIND_TABLE
-
-        # Catalog and dbt's own output namespace have no pipeline owner like
-        # the above -- dbt_config.json is the one place for those, still
-        # scoped here at run time since scoping is a deployment fact, not
-        # configuration.
-        config = json.loads((Path(dbt_project_dir) / "dbt_config.json").read_text())
-        os.environ["TRINO_CATALOG"] = config["catalog"]
-        for env_var_name, base_name in config["namespaces"].items():
-            os.environ[env_var_name] = scoped(base_name)
-
-        # Trino accepts only a Zitadel JWT: the lakehouse connection's own
-        # service-account token, so Trino's principal is that account.
-        os.environ["TRINO_JWT"] = get_settings().auth_header().removeprefix("Bearer ")
-
-        from dbt.cli.main import dbtRunner
-
-        result = dbtRunner().invoke(
-            [
-                "run",
-                "--project-dir", dbt_project_dir,
-                "--profiles-dir", dbt_project_dir,
-                "--select", "stg_wind__hourly",
-            ]
-        )
-        if not result.success:
-            # Only the failed nodes' messages: the full result also carries the
-            # task runner's argv, including its execution token.
-            failed = [r.message for r in result.result or [] if r.status in ("error", "fail")]
-            raise RuntimeError(f"dbt run failed: {result.exception or failed}")
-
-    ingested = ingest_wind_forecast()
-    transform_task = dbt_run(str(DBT_PROJECT_DIR))
-    ingested >> transform_task
+    ingest_wind_forecast() >> transform >> transformed()
 
 
 _dag = wind_pipeline()

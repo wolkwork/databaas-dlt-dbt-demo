@@ -1,4 +1,4 @@
-"""KNMI observation ingestion (dlt, as a file) -> hourly staging (dbt).
+"""KNMI observation ingestion (dlt, as a file) -> hourly staging (dbt via Cosmos).
 
 Ingests the most recently published hourly observation files for a single
 Dutch offshore station (Europlatform, see knmi_pipeline/models.py). KNMI's
@@ -32,27 +32,24 @@ re-poll for files that aren't there yet. `knmi.py`'s FILES_PER_RUN (30, not
 just avoids running that fetch when nothing new can possibly exist yet.
 
 Same Source structure otherwise as the marine/wind Sources: its own dbt step
-is a `dbtRunner()` call, and it stops at staging only
--- mirroring the wind Source, not the marine one -- since KNMI has no
+is a Cosmos TaskGroup in watcher mode (`dbt_cosmos`), and it stops at
+staging only -- mirroring the wind Source, not the marine one -- since KNMI has no
 private mart of its own; only the shared sea_state_hourly (see
 marts_pipeline_dag.py) consumes its Current observation.
 
 On success, emits an Asset so the shared Marts DAG can trigger off this
-Source's completion, same as the marine/wind Sources -- and per your
-request, scheduled so this Source's own daily run lands before the Marts
-DAG's Asset-triggered run picks it up, rather than racing a fixed time gap.
+Source's completion, same as the marine/wind Sources. Because the Marts DAG
+triggers on that Asset, this Source's daily run always lands before the
+Marts DAG picks it up, rather than racing a fixed time gap.
 
 Task layout:
-    ingest_knmi_files ──> parse_knmi_observations ──> dbt_run (emits an Asset)
+    ingest_knmi_files ──> parse_knmi_observations ──> dbt (Cosmos TaskGroup)
+        ──> transformed (emits an Asset)
 
 dlt, dbt and databaas-utils ship in the Airflow runtime image the task pods
 run, so those tasks are plain `@task`s. netCDF4 does not, so
 `parse_knmi_observations` alone is a `@task.virtualenv` on top of the image's
 packages.
-
-`dbt/` lives at `airflow/dbt/` -- inside the deployed bundle (the whole
-`airflow/` tree is deployed), so the dbt task resolves it relative to this
-file, the same way `BUNDLE_IMPORT_ROOT` does.
 """
 
 from __future__ import annotations
@@ -61,15 +58,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import Asset, dag, task
-from databaas_target import target
+from databaas_utils.airflow.target import target
+from dbt_cosmos import dbt_task_group
+
+# Source schema/table names are owned by the pipeline code that actually
+# writes them; namespace() already applies scoped() internally.
+from knmi_pipeline.lakehouse import TABLE as KNMI_TABLE
+from knmi_pipeline.lakehouse import namespace as knmi_namespace
 
 # The bundle is on the task process's sys.path, not on a @task.virtualenv
 # body's fresh interpreter -- compute it once here and pass it into the venv
 # task, which imports the pipeline's own package.
 BUNDLE_IMPORT_ROOT = str(Path(__file__).resolve().parents[1])
-
-# Ships inside the bundle at airflow/dbt/ -- see the module docstring.
-DBT_PROJECT_DIR = Path(BUNDLE_IMPORT_ROOT) / "dbt"
 
 # Scoped like `target.dag_id()` so a dev deployment's runs emit a distinct
 # Asset from production's -- otherwise a dev branch's successful run would
@@ -180,69 +180,21 @@ def knmi_pipeline():
 
     # ---- hourly staging ----
 
-    @task(
-        task_id="dbt_run",
-        retries=2,
-        retry_delay=timedelta(minutes=2),
-        outlets=[KNMI_OBSERVATION_ASSET],
+    transform = dbt_task_group(
+        group_id="dbt",
+        # `+` is a no-op today (stg_knmi__hourly selects only from a
+        # source()), kept so a future ref() ancestor is built too.
+        select=["+stg_knmi__hourly"],
+        source_env={"KNMI_SCHEMA": knmi_namespace(), "KNMI_TABLE": KNMI_TABLE},
     )
-    def dbt_run(dbt_project_dir: str) -> None:
-        import json
-        import os
-        from pathlib import Path
 
-        from databaas_utils.airflow import get_settings, scoped
-
-        # Source schema/table names are owned by the pipeline code that
-        # actually writes them -- import directly instead of copying the
-        # strings into dbt_config.json/sources.yml by hand, where they could
-        # drift. namespace() already applies scoped() internally.
-        from knmi_pipeline.lakehouse import TABLE as KNMI_TABLE
-        from knmi_pipeline.lakehouse import namespace as knmi_namespace
-
-        os.environ["KNMI_SCHEMA"] = knmi_namespace()
-        os.environ["KNMI_TABLE"] = KNMI_TABLE
-
-        # Catalog and dbt's own output namespace have no pipeline owner like
-        # the above -- dbt_config.json is the one place for those, still
-        # scoped here at run time since scoping is a deployment fact, not
-        # configuration.
-        config = json.loads((Path(dbt_project_dir) / "dbt_config.json").read_text())
-        os.environ["TRINO_CATALOG"] = config["catalog"]
-        for env_var_name, base_name in config["namespaces"].items():
-            os.environ[env_var_name] = scoped(base_name)
-
-        # Trino accepts only a Zitadel JWT: the lakehouse connection's own
-        # service-account token, so Trino's principal is that account.
-        os.environ["TRINO_JWT"] = get_settings().auth_header().removeprefix("Bearer ")
-
-        from dbt.cli.main import dbtRunner
-
-        result = dbtRunner().invoke(
-            [
-                "run",
-                "--project-dir", dbt_project_dir,
-                "--profiles-dir", dbt_project_dir,
-                # `+stg_knmi__hourly`, not the bare model name
-                # (a bare model name skips its `ref()` ancestors,
-                # which can fail TABLE_NOT_FOUND on a fresh namespace) --
-                # though stg_knmi__hourly only selects from a source(), not
-                # a ref(), so it has no ancestor to miss and this is a no-op
-                # today. Keeping the `+` anyway: cheap, consistent, and
-                # correct automatically if this model ever grows a ref().
-                "--select", "+stg_knmi__hourly",
-            ]
-        )
-        if not result.success:
-            # Only the failed nodes' messages: the full result also carries the
-            # task runner's argv, including its execution token.
-            failed = [r.message for r in result.result or [] if r.status in ("error", "fail")]
-            raise RuntimeError(f"dbt run failed: {result.exception or failed}")
+    @task(outlets=[KNMI_OBSERVATION_ASSET])
+    def transformed() -> None:
+        """Marks the whole dbt group done, for the Marts DAG's trigger."""
 
     landed = ingest_knmi_files()
     parsed = parse_knmi_observations(landed, BUNDLE_IMPORT_ROOT)
-    transform_task = dbt_run(str(DBT_PROJECT_DIR))
-    parsed >> transform_task
+    parsed >> transform >> transformed()
 
 
 _dag = knmi_pipeline()
