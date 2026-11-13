@@ -3,11 +3,12 @@ marine_transform:
   outputs:
     trino:
       type: trino
+      # Used for local runs and `dbt parse` only: in Airflow, Cosmos writes its
+      # own profile (dbt_cosmos.LakehouseTrinoJWTProfileMapping), with the
+      # lakehouse connection's service-account token as the JWT.
       # Trino accepts only a Zitadel JWT, over its HTTPS gateway hostname --
-      # plain HTTP to the in-cluster Service is rejected. Each Airflow dbt_run
-      # task sets TRINO_JWT from the lakehouse connection's service account
-      # (databaas_utils.airflow.get_settings), whose token `sub` is the Trino
-      # principal; a local run sets it by hand (`databaas token`).
+      # plain HTTP to the in-cluster Service is rejected. A local run sets
+      # TRINO_JWT from your own login (see the README).
       method: jwt
       jwt_token: "{{ env_var('TRINO_JWT') }}"
       host: "{{ env_var('TRINO_HOST', 'trino.example.databaas.app') }}"
@@ -19,7 +20,7 @@ marine_transform:
       cert: true
       catalog: "{{ env_var('TRINO_CATALOG', 'iceberg') }}"
       # Output namespace for this project's own models (marts/staging),
-      # scoped per deployment -- the Airflow dbt_run task derives this from
+      # scoped per deployment -- in Airflow, dbt_cosmos derives this from
       # dbt_config.json + databaas_utils.airflow.scoped(); this fallback only
       # matters for a local run, where TRINO_NAMESPACE must be set by hand.
       schema: "{{ env_var('TRINO_NAMESPACE', 'marine_transformed') }}"

@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from airflow.sdk import Asset, dag, task
-from databaas_target import target
+from databaas_utils.airflow.target import target
 from dbt_cosmos import dbt_task_group
 
 # Source schema/table names are owned by the pipeline code that actually

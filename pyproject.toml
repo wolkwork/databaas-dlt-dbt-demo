@@ -12,8 +12,10 @@ dependencies = []
 dev = [
     # dlt, pyiceberg and databaas-utils pinned to the Airflow runtime image,
     # so a test failure here reflects the same behaviour production runs.
-    # [airflow] as in the image: obstore-databaas comes only through an extra.
-    "databaas-utils[airflow]==0.4.0",
+    # Extras as in the image (airflow-runtime 1.0.2): obstore-databaas comes
+    # only through an extra.
+    "databaas-utils[airflow,zarr]==0.6.0",
+    "zarr==3.3.0",
     "pylakekeeper==0.3.0",
     "dlt==1.30.0",
     # Pinned to what knmi_pipeline_dag.py's venv installs.
