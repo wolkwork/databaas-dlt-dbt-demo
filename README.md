@@ -60,8 +60,8 @@ source row per key.
   1. **`ingest_wind_forecast`**: calls the Open-Meteo Forecast API for the same location's
      7-day hourly wind speed/direction forecast (`airflow/wind_pipeline/wind.py`) and appends
      it raw to its own Iceberg table (`airflow/wind_pipeline/lakehouse.py`).
-  2. **`dbt_run`**: unnests the raw hourly payload into one row per hour
-     (`stg_wind__hourly`) and emits an Asset on success.
+  2. **`dbt`**: a Cosmos TaskGroup that unnests the raw hourly payload into one row per
+     hour (`stg_wind__hourly`). A final `transformed` task emits the Asset.
 - **`airflow/dags/knmi_pipeline_dag.py`** defines the `knmi_pipeline` DAG, scheduled daily
   (KNMI publishes this dataset's files once a night). It demonstrates dlt's "ingest as a
   file" pattern:
@@ -70,9 +70,10 @@ source row per key.
      `airflow/knmi_pipeline/lakehouse.py`).
   2. **`parse_knmi_observations`**: reads each landed file back, extracts the station's
      reading (`airflow/knmi_pipeline/parsing.py`) and appends it to an Iceberg table.
-  3. **`dbt_run`**: casts the parsed rows into `stg_knmi__hourly` and emits an Asset.
+  3. **`dbt`**: a Cosmos TaskGroup that casts the parsed rows into `stg_knmi__hourly`. A
+     final `transformed` task emits the Asset.
 - **`airflow/dags/marts_pipeline_dag.py`** defines the `marts_pipeline` DAG: the shared Marts
-  DAG, with no ingestion of its own. Its single **`dbt_run`** task builds `sea_state_hourly`
+  DAG, with no ingestion of its own. Its **`dbt`** Cosmos TaskGroup builds `sea_state_hourly`
   (`airflow/dbt/models/marts/sea_state_hourly.sql`): marine and wind inner-joined on
   `(location, forecast_time)`, with KNMI's observation left-joined on, so observed columns are
   NULL until KNMI has published that hour. It is `materialized='incremental'` with
@@ -95,9 +96,9 @@ anywhere. dbt authenticates to Trino with the same service account's token.
 ```
 airflow/
   dags/marine_pipeline_dag.py   # marine Source DAG: ingest -> dbt (Cosmos) -> transformed (emits an Asset)
-  dags/wind_pipeline_dag.py     # wind Source DAG: ingest -> dbt_run (emits an Asset)
-  dags/knmi_pipeline_dag.py     # KNMI Source DAG: land files -> parse -> dbt_run (emits an Asset)
-  dags/marts_pipeline_dag.py    # shared Marts DAG: dbt_run only, triggered by any Source's Asset
+  dags/wind_pipeline_dag.py     # wind Source DAG: ingest -> dbt (Cosmos) -> transformed (emits an Asset)
+  dags/knmi_pipeline_dag.py     # KNMI Source DAG: land files -> parse -> dbt (Cosmos) -> transformed (emits an Asset)
+  dags/marts_pipeline_dag.py    # shared Marts DAG: dbt (Cosmos) only, triggered by any Source's Asset
   marine_pipeline/              # marine Source: dlt source, location config, lakehouse write
   wind_pipeline/                # wind Source: dlt source, location config, lakehouse write
   knmi_pipeline/                # KNMI Source: file listing/download, NetCDF parsing, lakehouse write
@@ -127,8 +128,8 @@ pyproject.toml                  # dev-only tooling (pytest and friends)
   registered KNMI Data Platform API key as its password.
 - **Trino connection** defaults live in `airflow/dbt/profiles.yml`: JWT over HTTPS to
   `trino.example.databaas.app:443`, overridable via `TRINO_HOST`/`DBT_TRINO_PORT`/
-  `TRINO_CATALOG`. Each `dbt_run` task sets `TRINO_JWT` from the lakehouse connection;
-  a local run sets it by hand (`databaas token`).
+  `TRINO_CATALOG`. In Airflow, Cosmos fills in the token from the lakehouse connection;
+  a local run uses your own login instead (see "Running dbt locally" below).
 
 ## dbt with Cosmos
 
@@ -147,6 +148,31 @@ and logs without a pod and a dbt parse per node.
 - **Assets:** Cosmos's per-model asset emission is off (`emit_datasets=False`); each DAG
   emits its own Asset from a final task.
 
+## Running dbt locally
+
+You can run the dbt project from your laptop against the real Trino, as yourself rather
+than as the pipeline's service account. Sign in with the `databaas` CLI as described in
+[Laptop login](https://wolkwork.github.io/databaas-utils/local-login/), then set:
+
+- `TRINO_JWT` to an access token from that login (see the
+  [command line reference](https://wolkwork.github.io/databaas-utils/cli/)). It expires, so
+  refresh it in a new session.
+- `TRINO_HOST` to `trino.<your-databaas-domain>`.
+- `TRINO_NAMESPACE` to a namespace of your own, **every time**. Without it, dbt writes to
+  `marine_transformed`, the production namespace.
+
+Then run dbt with the dbt-core and dbt-trino versions the Airflow runtime image ships
+(dbt 1.10 needs Python 3.12):
+
+```sh
+uvx --python 3.12 --from dbt-core==1.10.3 --with dbt-trino==1.10.3 \
+  dbt build --project-dir airflow/dbt --profiles-dir airflow/dbt
+```
+
+The source tables default to the production names (`MARINE_SCHEMA`/`MARINE_TABLE`, and the
+same for `WIND_` and `KNMI_`), which is fine for reading. Your login needs grants on the
+namespaces you read and write.
+
 ## Testing
 
 Unit tests live under `tests/` at the repo root, outside `airflow/` (so they never
@@ -159,3 +185,11 @@ uv run --group dev pytest
 
 `pytest`, `responses` (HTTP mocking), and `dlt` are dev-only dependencies declared
 in the root `pyproject.toml`'s `dev` group, separate from `airflow/pyproject.toml`.
+
+## Deploying
+
+`databaas.yml` describes this repository's DAG bundle for the `databaas dag` commands. Build
+the dbt manifest with `dbt parse` first, then validate and deploy from CI with your
+environment's DAG deployment key: see
+[Develop and ship a pipeline](https://docs.databaas.eu/pipelines/development-workflow) and
+[Deploying DAGs](https://wolkwork.github.io/databaas-utils/dags/).
